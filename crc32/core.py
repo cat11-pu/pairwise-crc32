@@ -82,7 +82,7 @@ def crc_table():
         rows = []
         for index in range(256):
             register = index
-            for _ in range(7):
+            for _ in range(8):
                 if register & 1:
                     register = (register >> 1) ^ POLY
                 else:
@@ -98,11 +98,11 @@ def crc32(data, crc=0):
     Passing back the value of an earlier call keeps the checksum running, so
     ``crc32(tail, crc32(head))`` and ``crc32(head + tail)`` agree.
     """
-    value = crc
+    value = crc ^ MASK
     table = crc_table()
     for byte in data:
         value = table[(value ^ byte) & 0xFF] ^ (value >> 8)
-    return value
+    return value ^ MASK
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ def declared_length(data, offset=0):
     """Return the payload length written in the frame at ``offset``."""
     if len(data) - offset < LENGTH_SIZE:
         raise FrameError("the length field is truncated", offset)
-    return int.from_bytes(data[offset:offset + LENGTH_SIZE], "little")
+    return int.from_bytes(data[offset:offset + LENGTH_SIZE], "big")
 
 
 def _frame_span(data, offset):
@@ -125,17 +125,17 @@ def _frame_span(data, offset):
     frame is complete.
     """
     length = declared_length(data, offset)
-    if length >= MAX_PAYLOAD:
+    if length > MAX_PAYLOAD:
         raise FrameError("the payload is larger than the kernel allows", offset)
     frame_end = offset + LENGTH_SIZE + length + CHECKSUM_SIZE
     if frame_end > len(data):
-        raise FrameError("the frame is truncated", len(data))
+        raise FrameError("the frame is truncated", offset)
     return frame_end - CHECKSUM_SIZE, frame_end
 
 
 def _frame_checksum(data, start, body_end):
     """Return the checksum a frame body should carry."""
-    return crc32(data[start + LENGTH_SIZE:body_end])
+    return crc32(data[start:body_end])
 
 
 def encode_frame(payload):
@@ -146,7 +146,7 @@ def encode_frame(payload):
     if len(payload) > MAX_PAYLOAD:
         raise FrameError("the payload is larger than the kernel allows")
     body = len(payload).to_bytes(LENGTH_SIZE, "big") + payload
-    return body + crc32(payload).to_bytes(CHECKSUM_SIZE, "big")
+    return body + crc32(body).to_bytes(CHECKSUM_SIZE, "big")
 
 
 def decode_frame(data, offset=0):
@@ -163,7 +163,7 @@ def decode_frame(data, offset=0):
     stored = int.from_bytes(data[body_end:frame_end], "big")
     if stored != _frame_checksum(data, offset, body_end):
         raise FrameError("the checksum does not match", offset)
-    return data[offset:body_end], frame_end
+    return data[offset + LENGTH_SIZE:body_end], frame_end
 
 
 def split_frames(buffer, offset=0):
@@ -196,6 +196,5 @@ def locate_bad_frames(buffer, offset=0):
         stored = int.from_bytes(buffer[body_end:frame_end], "big")
         if stored != _frame_checksum(buffer, offset, body_end):
             damaged.append(offset)
-            break
         offset = frame_end
     return damaged
